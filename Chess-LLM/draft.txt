@@ -1,0 +1,967 @@
+this is the html file for my chessboard
+
+<!DOCTYPE html>
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Chess</title>
+    <link rel="stylesheet" href="styles.css" />
+    <link
+      rel="stylesheet"
+      href="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.css"
+    />
+  </head>
+  <body>
+    <div id="container">
+      <div id="myBoard" style="width: 400px"></div>
+
+      <div class="button-row">
+        <button id="startBtn">Restart Game</button>
+        <button id="undoBtn" disabled>Undo</button>
+      </div>
+
+      <div id="gameInfo" style="margin-top: 10px">
+        <p><strong>PGN:</strong> <span id="pgnDisplay"></span></p>
+        <p><strong>FEN:</strong> <span id="fenDisplay"></span></p>
+        <input type="text" id="fenInput" placeholder="Paste FEN string here" />
+        <button id="setFenBtn">Set FEN</button>
+      </div>
+      <div><button onclick="fetchGroqText()">Get Explanation</button></div>
+      <div id="evaluation"></div>
+      <div id="bestMoves">
+        <p><strong>Best Move:</strong> <span id="bestMove"></span></p>
+        <p><strong>Alternative Move 1:</strong> <span id="altMove1"></span></p>
+        <p><strong>Alternative Move 2:</strong> <span id="altMove2"></span></p>
+      </div>
+    </div>
+
+    <script src="https://code.jquery.com/jquery-3.5.1.min.js"></script>
+    <script src="https://unpkg.com/@chrisoakman/chessboardjs@1.0.0/dist/chessboard-1.0.0.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/chess.js/0.10.2/chess.js"></script>
+    <script src="stockfish.js"></script>
+    <script src="game.js"></script>
+    <script>
+      var board = null;
+      var game = new Chess();
+      var moveHistory = [];
+
+      var FEN_INPUT = "";
+      var PGN_INPUT = "";
+      var BEST_MOVE_INPUT = "";
+      var SEQUENCE_OF_BEST_MOVES_INPUT = "";
+      var ALTERNATIVE_MOVE_1 = "";
+      var ALTERNATIVE_MOVE_2 = "";
+      var PLAYER_INPUT = "";
+
+      var stockfishPlayer = new Worker("stockfish.js");
+      var stockfishEvaluator = new Worker("stockfish.js");
+      var skillLevel = 0;
+
+      function initializeStockfish() {
+        stockfishPlayer.postMessage("uci");
+        stockfishEvaluator.postMessage("uci");
+        console.log("Stockfish initialization started");
+      }
+
+      function setSkillLevel(level) {
+        stockfishPlayer.postMessage(
+          `setoption name Skill Level value ${level}`
+        );
+        console.log(`Set Stockfish skill level to ${level}`);
+      }
+
+      function onDragStart(source, piece, position, orientation) {
+        if (game.game_over()) return false;
+        if (piece.search(/^b/) !== -1) return false;
+      }
+
+      function makeStockfishMove() {
+        stockfishPlayer.postMessage("position fen " + game.fen());
+        stockfishPlayer.postMessage("go depth 15");
+      }
+
+      stockfishPlayer.onmessage = function (event) {
+        var message = event.data;
+        if (message.startsWith("uciok")) {
+          console.log("Stockfish is ready");
+        }
+        if (message.startsWith("info depth")) {
+          var parts = message.split(" ");
+          var evaluationIndex = parts.indexOf("score") + 2;
+          var evaluation = parts[evaluationIndex];
+          if (parts[evaluationIndex - 1] === "cp") {
+            evaluation = (evaluation / 100.0).toFixed(2);
+          } else if (parts[evaluationIndex - 1] === "mate") {
+            evaluation = "#" + evaluation;
+          }
+          document.getElementById("evaluation").innerText =
+            "Evaluation: " + evaluation;
+        }
+        if (message.startsWith("bestmove")) {
+          var bestMove = message.split(" ")[1];
+          game.move({
+            from: bestMove.substring(0, 2),
+            to: bestMove.substring(2, 4),
+            promotion: "q",
+          });
+          board.position(game.fen());
+          updateStatus();
+          suggestTopMoves();
+        }
+      };
+
+      function suggestTopMoves() {
+        stockfishEvaluator.postMessage("position fen " + game.fen());
+        stockfishEvaluator.postMessage("go depth 15");
+      }
+
+      stockfishEvaluator.onmessage = function (event) {
+        var message = event.data;
+        if (message.startsWith("uciok")) {
+          console.log("Stockfish Evaluator is ready");
+        }
+        if (message.startsWith("info depth")) {
+          var parts = message.split(" ");
+          var moveIndex = parts.indexOf("pv") + 1;
+          var moves = parts.slice(moveIndex, moveIndex + 6).join(" ");
+          SEQUENCE_OF_BEST_MOVES_INPUT = moves;
+          BEST_MOVE_INPUT = moves.split(" ")[0];
+          ALTERNATIVE_MOVE_1 = moves.split(" ")[2] || "";
+          ALTERNATIVE_MOVE_2 = moves.split(" ")[4] || "";
+          document.getElementById("bestMove").innerText = BEST_MOVE_INPUT;
+          document.getElementById("altMove1").innerText = ALTERNATIVE_MOVE_1;
+          document.getElementById("altMove2").innerText = ALTERNATIVE_MOVE_2;
+
+          // Log variables to console
+          console.log(
+            "SEQUENCE_OF_BEST_MOVES_INPUT:",
+            SEQUENCE_OF_BEST_MOVES_INPUT
+          );
+          console.log("BEST_MOVE_INPUT:", BEST_MOVE_INPUT);
+          console.log("ALTERNATIVE_MOVE_1:", ALTERNATIVE_MOVE_1);
+          console.log("ALTERNATIVE_MOVE_2:", ALTERNATIVE_MOVE_2);
+        }
+      };
+
+      function onDrop(source, target) {
+        var move = game.move({
+          from: source,
+          to: target,
+          promotion: "q",
+        });
+        if (move === null) return "snapback";
+        moveHistory.push(game.history({ verbose: true }).slice(-1)[0]);
+        displayPGN();
+        displayFEN();
+        updateButtons();
+        window.setTimeout(makeStockfishMove, 250);
+      }
+
+      function onSnapEnd() {
+        board.position(game.fen());
+      }
+
+      function updateStatus() {
+        var status = "";
+
+        var moveColor = "White";
+        if (game.turn() === "b") {
+          moveColor = "Black";
+        }
+
+        if (game.in_checkmate()) {
+          status = "Game over, " + moveColor + " is in checkmate.";
+        } else if (game.in_draw()) {
+          status = "Game over, drawn position";
+        } else {
+          status = moveColor + " to move";
+
+          if (game.in_check()) {
+            status += ", " + moveColor + " is in check";
+          }
+        }
+
+        $("#status").html(status);
+        $("#fen").html(game.fen());
+        $("#pgn").html(game.pgn());
+      }
+
+      function displayPGN() {
+        var pgn = game.pgn();
+        document.getElementById("pgnDisplay").innerText = pgn;
+        PGN_INPUT = pgn;
+        console.log("PGN_INPUT:", PGN_INPUT);
+      }
+
+      function displayFEN() {
+        var fen = game.fen();
+        document.getElementById("fenDisplay").innerText = fen;
+        FEN_INPUT = fen;
+        console.log("FEN_INPUT:", FEN_INPUT);
+      }
+
+      function updateButtons() {
+        $("#undoBtn").prop("disabled", moveHistory.length === 0);
+      }
+
+      $("#startBtn").on("click", function () {
+        game.reset();
+        board.start();
+        moveHistory = [];
+        displayPGN();
+        displayFEN();
+        updateButtons();
+      });
+
+      $("#undoBtn").on("click", function () {
+        if (moveHistory.length > 0) {
+          game.undo();
+          moveHistory.pop();
+          board.position(game.fen());
+          displayPGN();
+          displayFEN();
+          updateButtons();
+        }
+      });
+
+      $("#setFenBtn").on("click", function () {
+        var fen = $("#fenInput").val();
+        if (game.validate_fen(fen).valid) {
+          game.load(fen);
+          board.position(fen);
+          displayPGN();
+          displayFEN();
+          updateButtons();
+        } else {
+          alert("Invalid FEN string");
+        }
+      });
+
+      var config = {
+        draggable: true,
+        position: "start",
+        onDragStart: onDragStart,
+        onDrop: onDrop,
+        onSnapEnd: onSnapEnd,
+      };
+      board = Chessboard("myBoard", config);
+
+      $(document).ready(function () {
+        var urlParams = new URLSearchParams(window.location.search);
+        var level = urlParams.get("level");
+        if (level) {
+          skillLevel = level;
+          setSkillLevel(skillLevel);
+        }
+        initializeStockfish();
+      });
+    </script>
+  </body>
+</html>
+
+
+this is the game.js file 
+
+
+
+var board = null;
+var game = new Chess();
+var moveHistory = [];
+
+var $status = $("#status");
+var $fen = $("#fen");
+var $pgn = $("#pgn");
+var stockfishPlayer = new Worker("stockfish.js");
+var stockfishEvaluator = new Worker("stockfish.js");
+var skillLevel = 0;
+
+var FEN_INPUT = "";
+var PGN_INPUT = "";
+var BEST_MOVE_INPUT = "";
+var SEQUENCE_OF_BEST_MOVES_INPUT = "";
+var ALTERNATIVE_MOVE_1 = "";
+var ALTERNATIVE_MOVE_2 = "";
+var PLAYER_INPUT = "";var board = null;
+var game = new Chess();
+var moveHistory = [];
+
+var $status = $("#status");
+var $fen = $("#fen");
+var $pgn = $("#pgn");
+var stockfishPlayer = new Worker("stockfish.js");
+var stockfishEvaluator = new Worker("stockfish.js");
+var skillLevel = 0;
+
+var FEN_INPUT = "";
+var PGN_INPUT = "";
+var BEST_MOVE_INPUT = "";
+var SEQUENCE_OF_BEST_MOVES_INPUT = "";
+var ALTERNATIVE_MOVE_1 = "";
+var ALTERNATIVE_MOVE_2 = "";
+var PLAYER_INPUT = "";
+
+function initializeStockfish() {
+  stockfishPlayer.postMessage("uci");
+  stockfishEvaluator.postMessage("uci");
+  console.log("Stockfish initialization started");
+}
+
+function setSkillLevel(level) {
+  stockfishPlayer.postMessage(`setoption name Skill Level value ${level}`);
+  console.log(`Set Stockfish skill level to ${level}`);
+}
+
+function onDragStart(source, piece, position, orientation) {
+  // do not pick up pieces if the game is over
+  if (game.game_over()) return false;
+
+  // only pick up pieces for White
+  if (piece.search(/^b/) !== -1) return false;
+}
+
+function onDrop(source, target) {
+  // see if the move is legal
+  var move = game.move({
+    from: source,
+    to: target,
+    promotion: "q", // NOTE: always promote to a queen for example simplicity
+  });
+
+  // illegal move
+  if (move === null) return "snapback";
+
+  // make Stockfish move after player move
+  window.setTimeout(makeStockfishMove, 250);
+  moveHistory.push(game.history({ verbose: true }).slice(-1)[0]);
+  displayPGN();
+  displayFEN();
+  updateButtons();
+}
+
+// update the board position after the piece snap
+// for castling, en passant, pawn promotion
+function onSnapEnd() {
+  board.position(game.fen());
+}
+
+function makeStockfishMove() {
+  stockfishPlayer.postMessage("position fen " + game.fen());
+  stockfishPlayer.postMessage("go depth 15");
+}
+
+stockfishPlayer.onmessage = function (event) {
+  var message = event.data;
+
+  if (message.startsWith("uciok")) {
+    console.log("Stockfish is ready");
+  }
+
+  if (message.startsWith("info depth")) {
+    var parts = message.split(" ");
+    var evaluationIndex = parts.indexOf("score") + 2;
+    var evaluation = parts[evaluationIndex];
+    if (parts[evaluationIndex - 1] === "cp") {
+      evaluation = (evaluation / 100.0).toFixed(2);
+    } else if (parts[evaluationIndex - 1] === "mate") {
+      evaluation = "#" + evaluation;
+    }
+    document.getElementById("evaluation").innerText =
+      "Evaluation: " + evaluation;
+  }
+
+  if (message.startsWith("bestmove")) {
+    var bestMove = message.split(" ")[1];
+    game.move({
+      from: bestMove.substring(0, 2),
+      to: bestMove.substring(2, 4),
+      promotion: "q",
+    });
+    board.position(game.fen());
+    updateStatus();
+
+    // Now that StockfishPlayer has moved, use StockfishEvaluator for move suggestions
+    suggestTopMoves();
+  }
+};
+
+function suggestTopMoves() {
+  stockfishEvaluator.postMessage("position fen " + game.fen());
+  stockfishEvaluator.postMessage("go depth 15");
+}
+
+stockfishEvaluator.onmessage = function (event) {
+  var message = event.data;
+
+  if (message.startsWith("uciok")) {
+    console.log("Stockfish Evaluator is ready");
+  }
+
+  if (message.startsWith("info depth")) {
+    var parts = message.split(" ");
+    var moveIndex = parts.indexOf("pv") + 1;
+    var moves = parts.slice(moveIndex, moveIndex + 6).join(" ");
+    SEQUENCE_OF_BEST_MOVES_INPUT = moves;
+
+    BEST_MOVE_INPUT = moves.split(" ")[0];
+    ALTERNATIVE_MOVE_1 = moves.split(" ")[2] || "";
+    ALTERNATIVE_MOVE_2 = moves.split(" ")[4] || "";
+
+    document.getElementById("bestMove").innerText = BEST_MOVE_INPUT;
+    document.getElementById("altMove1").innerText = ALTERNATIVE_MOVE_1;
+    document.getElementById("altMove2").innerText = ALTERNATIVE_MOVE_2;
+
+    console.log("SEQUENCE_OF_BEST_MOVES_INPUT:", SEQUENCE_OF_BEST_MOVES_INPUT);
+    console.log("BEST_MOVE_INPUT:", BEST_MOVE_INPUT);
+    console.log("ALTERNATIVE_MOVE_1:", ALTERNATIVE_MOVE_1);
+    console.log("ALTERNATIVE_MOVE_2:", ALTERNATIVE_MOVE_2);
+  }
+};
+
+function updateStatus() {
+  var status = "";
+
+  var moveColor = "White";
+  if (game.turn() === "b") {
+    moveColor = "Black";
+  }
+
+  if (game.in_checkmate()) {
+    status = "Game over, " + moveColor + " is in checkmate.";
+  } else if (game.in_draw()) {
+    status = "Game over, drawn position";
+  } else {
+    status = moveColor + " to move";
+
+    if (game.in_check()) {
+      status += ", " + moveColor + " is in check";
+    }
+  }
+
+  $status.html(status);
+  $fen.html(game.fen());
+  $pgn.html(game.pgn());
+
+  FEN_INPUT = game.fen();
+  PGN_INPUT = game.pgn();
+  PLAYER_INPUT = moveColor;
+
+  console.log("FEN_INPUT:", FEN_INPUT);
+  console.log("PGN_INPUT:", PGN_INPUT);
+  console.log("BEST_MOVE_INPUT:", BEST_MOVE_INPUT);
+  console.log("SEQUENCE_OF_BEST_MOVES_INPUT:", SEQUENCE_OF_BEST_MOVES_INPUT);
+  console.log("ALTERNATIVE_MOVE_1:", ALTERNATIVE_MOVE_1);
+  console.log("ALTERNATIVE_MOVE_2:", ALTERNATIVE_MOVE_2);
+}
+
+async function fetchGroqText() {
+  console.log("Fetching Groq text with values:");
+  console.log("FEN_INPUT:", FEN_INPUT);
+  console.log("PGN_INPUT:", PGN_INPUT);
+  console.log("BEST_MOVE_INPUT:", BEST_MOVE_INPUT);
+  console.log("SEQUENCE_OF_BEST_MOVES_INPUT:", SEQUENCE_OF_BEST_MOVES_INPUT);
+  console.log("ALTERNATIVE_MOVE_1:", ALTERNATIVE_MOVE_1);
+  console.log("ALTERNATIVE_MOVE_2:", ALTERNATIVE_MOVE_2);
+  console.log("PLAYER_INPUT:", PLAYER_INPUT);
+
+  try {
+    const response = await fetch("/groq-text", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        FEN_INPUT,
+        PGN_INPUT,
+        BEST_MOVE_INPUT,
+        SEQUENCE_OF_BEST_MOVES_INPUT,
+        ALTERNATIVE_MOVE_1,
+        ALTERNATIVE_MOVE_2,
+        PLAYER_INPUT,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = await response.json();
+    const markdownContent = data.content;
+    if (typeof markdownContent !== "string") {
+      throw new Error("Invalid response format");
+    }
+    const htmlContent = md.render(markdownContent); // Convert markdown to HTML using 'markdown-it'
+    document.getElementById("markdownDisplay").innerHTML = htmlContent;
+  } catch (error) {
+    console.error("Error fetching Groq text:", error);
+    document.getElementById("markdownDisplay").innerText =
+      "Error fetching text";
+  }
+}
+
+function startGame() {
+  game.reset();
+  board.start();
+  moveHistory = []; // reset move history
+  displayPGN();
+  displayFEN();
+  updateButtons();
+
+  skillLevel = document.getElementById("levelSelect").value;
+  initializeStockfish();
+  setSkillLevel(skillLevel);
+}
+
+function undoMove() {
+  if (moveHistory.length > 0) {
+    game.undo();
+    moveHistory.pop();
+    board.position(game.fen());
+    displayPGN();
+    displayFEN();
+    updateButtons();
+  }
+}
+
+function updateButtons() {
+  var undoBtn = document.getElementById("undoBtn");
+  undoBtn.disabled = moveHistory.length === 0;
+}
+
+var config = {
+  draggable: true,
+  position: "start",
+  onDragStart: onDragStart,
+  onDrop: onDrop,
+  onSnapEnd: onSnapEnd,
+};
+board = Chessboard("myBoard", config);
+
+// Add event listeners to buttons
+document.getElementById("startBtn").addEventListener("click", startGame);
+document.getElementById("undoBtn").addEventListener("click", undoMove);
+document.getElementById("setFenBtn").addEventListener("click", setFEN);
+
+// Display PGN and FEN under the board
+function displayPGN() {
+  var pgn = game.pgn({ max_width: 5, newline_char: "<br />" });
+
+  // Extracting only the move sequence without setup tags
+  var startIndex = pgn.indexOf("]");
+  var pgnText =
+    startIndex !== -1 ? pgn.slice(startIndex + 1).trim() : pgn.trim();
+
+  document.getElementById("pgnDisplay").innerHTML = pgnText;
+}
+
+function displayFEN() {
+  var fen = game.fen();
+  document.getElementById("fenDisplay").textContent = fen;
+}
+
+// Set FEN string and update board
+function setFEN() {
+  var fenInput = document.getElementById("fenInput").value.trim();
+  if (game.load(fenInput)) {
+    board.position(game.fen());
+    moveHistory = game.history({ verbose: true });
+    displayPGN();
+    displayFEN();
+    updateButtons();
+  } else {
+    alert("Invalid FEN string");
+  }
+}
+
+$(document).ready(function () {
+  var urlParams = new URLSearchParams(window.location.search);
+  var level = urlParams.get("level");
+  if (level) {
+    skillLevel = level;
+    setSkillLevel(skillLevel);
+  }
+  initializeStockfish();
+});
+
+
+
+function onDragStart(source, piece, position, orientation) {
+  // do not pick up pieces if the game is over
+  if (game.game_over()) return false;
+
+  // only pick up pieces for White
+  if (piece.search(/^b/) !== -1) return false;
+}
+
+function onDrop(source, target) {
+  // see if the move is legal
+  var move = game.move({
+    from: source,
+    to: target,
+    promotion: "q", // NOTE: always promote to a queen for example simplicity
+  });
+
+  // illegal move
+  if (move === null) return "snapback";
+
+  // make Stockfish move after player move
+  window.setTimeout(makeStockfishMove, 250);
+  moveHistory.push(game.history({ verbose: true }).slice(-1)[0]);
+  displayPGN();
+  displayFEN();
+  updateButtons();
+}
+
+// update the board position after the piece snap
+// for castling, en passant, pawn promotion
+function onSnapEnd() {
+  board.position(game.fen());
+}
+
+function makeStockfishMove() {
+  stockfishPlayer.postMessage("position fen " + game.fen());
+  stockfishPlayer.postMessage("go depth 15");
+}
+
+stockfishPlayer.onmessage = function (event) {
+  var message = event.data;
+
+  if (message.startsWith("uciok")) {
+    console.log("Stockfish is ready");
+  }
+
+  if (message.startsWith("info depth")) {
+    var parts = message.split(" ");
+    var evaluationIndex = parts.indexOf("score") + 2;
+    var evaluation = parts[evaluationIndex];
+    if (parts[evaluationIndex - 1] === "cp") {
+      evaluation = (evaluation / 100.0).toFixed(2);
+    } else if (parts[evaluationIndex - 1] === "mate") {
+      evaluation = "#" + evaluation;
+    }
+    document.getElementById("evaluation").innerText =
+      "Evaluation: " + evaluation;
+  }
+
+  if (message.startsWith("bestmove")) {
+    var bestMove = message.split(" ")[1];
+    game.move({
+      from: bestMove.substring(0, 2),
+      to: bestMove.substring(2, 4),
+      promotion: "q",
+    });
+    board.position(game.fen());
+    updateStatus();
+
+    // Now that StockfishPlayer has moved, use StockfishEvaluator for move suggestions
+    suggestTopMoves();
+  }
+};
+
+function suggestTopMoves() {
+  stockfishEvaluator.postMessage("position fen " + game.fen());
+  stockfishEvaluator.postMessage("go depth 15");
+}
+
+stockfishEvaluator.onmessage = function (event) {
+  var message = event.data;
+
+  if (message.startsWith("uciok")) {
+    console.log("Stockfish Evaluator is ready");
+  }
+
+  if (message.startsWith("info depth")) {
+    var parts = message.split(" ");
+    var moveIndex = parts.indexOf("pv") + 1;
+    var moves = parts.slice(moveIndex, moveIndex + 6).join(" ");
+    SEQUENCE_OF_BEST_MOVES_INPUT = moves;
+
+    BEST_MOVE_INPUT = moves.split(" ")[0];
+    ALTERNATIVE_MOVE_1 = moves.split(" ")[2] || "";
+    ALTERNATIVE_MOVE_2 = moves.split(" ")[4] || "";
+
+    document.getElementById("bestMove").innerText = BEST_MOVE_INPUT;
+    document.getElementById("altMove1").innerText = ALTERNATIVE_MOVE_1;
+    document.getElementById("altMove2").innerText = ALTERNATIVE_MOVE_2;
+
+    console.log("SEQUENCE_OF_BEST_MOVES_INPUT:", SEQUENCE_OF_BEST_MOVES_INPUT);
+    console.log("BEST_MOVE_INPUT:", BEST_MOVE_INPUT);
+    console.log("ALTERNATIVE_MOVE_1:", ALTERNATIVE_MOVE_1);
+    console.log("ALTERNATIVE_MOVE_2:", ALTERNATIVE_MOVE_2);
+  }
+};
+
+function updateStatus() {
+  var status = "";
+
+  var moveColor = "White";
+  if (game.turn() === "b") {
+    moveColor = "Black";
+  }
+
+  if (game.in_checkmate()) {
+    status = "Game over, " + moveColor + " is in checkmate.";
+  } else if (game.in_draw()) {
+    status = "Game over, drawn position";
+  } else {
+    status = moveColor + " to move";
+
+    if (game.in_check()) {
+      status += ", " + moveColor + " is in check";
+    }
+  }
+
+  $status.html(status);
+  $fen.html(game.fen());
+  $pgn.html(game.pgn());
+
+  FEN_INPUT = game.fen();
+  PGN_INPUT = game.pgn();
+  PLAYER_INPUT = moveColor;
+
+  console.log("FEN_INPUT:", FEN_INPUT);
+  console.log("PGN_INPUT:", PGN_INPUT);
+  console.log("BEST_MOVE_INPUT:", BEST_MOVE_INPUT);
+  console.log("SEQUENCE_OF_BEST_MOVES_INPUT:", SEQUENCE_OF_BEST_MOVES_INPUT);
+  console.log("ALTERNATIVE_MOVE_1:", ALTERNATIVE_MOVE_1);
+  console.log("ALTERNATIVE_MOVE_2:", ALTERNATIVE_MOVE_2);
+}
+
+async function fetchGroqText() {
+  console.log("Fetching Groq text with values:");
+  console.log("FEN_INPUT:", FEN_INPUT);
+  console.log("PGN_INPUT:", PGN_INPUT);
+  console.log("BEST_MOVE_INPUT:", BEST_MOVE_INPUT);
+  console.log("SEQUENCE_OF_BEST_MOVES_INPUT:", SEQUENCE_OF_BEST_MOVES_INPUT);
+  console.log("ALTERNATIVE_MOVE_1:", ALTERNATIVE_MOVE_1);
+  console.log("ALTERNATIVE_MOVE_2:", ALTERNATIVE_MOVE_2);
+  console.log("PLAYER_INPUT:", PLAYER_INPUT);
+
+  try {
+    const response = await fetch("/groq-text", {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        FEN_INPUT,
+        PGN_INPUT,
+        BEST_MOVE_INPUT,
+        SEQUENCE_OF_BEST_MOVES_INPUT,
+        ALTERNATIVE_MOVE_1,
+        ALTERNATIVE_MOVE_2,
+        PLAYER_INPUT,
+      }),
+    });
+    if (!response.ok) {
+      throw new Error(`HTTP error! status: ${response.status}`);
+    }
+    const data = await response.json();
+    const markdownContent = data.content;
+    if (typeof markdownContent !== "string") {
+      throw new Error("Invalid response format");
+    }
+    const htmlContent = md.render(markdownContent); // Convert markdown to HTML using 'markdown-it'
+    document.getElementById("markdownDisplay").innerHTML = htmlContent;
+  } catch (error) {
+    console.error("Error fetching Groq text:", error);
+    document.getElementById("markdownDisplay").innerText =
+      "Error fetching text";
+  }
+}
+
+function startGame() {
+  game.reset();
+  board.start();
+  moveHistory = []; // reset move history
+  displayPGN();
+  displayFEN();
+  updateButtons();
+
+  skillLevel = document.getElementById("levelSelect").value;
+  initializeStockfish();
+  setSkillLevel(skillLevel);
+}
+
+function undoMove() {
+  if (moveHistory.length > 0) {
+    game.undo();
+    moveHistory.pop();
+    board.position(game.fen());
+    displayPGN();
+    displayFEN();
+    updateButtons();
+  }
+}
+
+function updateButtons() {
+  var undoBtn = document.getElementById("undoBtn");
+  undoBtn.disabled = moveHistory.length === 0;
+}
+
+var config = {
+  draggable: true,
+  position: "start",
+  onDragStart: onDragStart,
+  onDrop: onDrop,
+  onSnapEnd: onSnapEnd,
+};
+board = Chessboard("myBoard", config);
+
+// Add event listeners to buttons
+document.getElementById("startBtn").addEventListener("click", startGame);
+document.getElementById("undoBtn").addEventListener("click", undoMove);
+document.getElementById("setFenBtn").addEventListener("click", setFEN);
+
+// Display PGN and FEN under the board
+function displayPGN() {
+  var pgn = game.pgn({ max_width: 5, newline_char: "<br />" });
+
+  // Extracting only the move sequence without setup tags
+  var startIndex = pgn.indexOf("]");
+  var pgnText =
+    startIndex !== -1 ? pgn.slice(startIndex + 1).trim() : pgn.trim();
+
+  document.getElementById("pgnDisplay").innerHTML = pgnText;
+}
+
+function displayFEN() {
+  var fen = game.fen();
+  document.getElementById("fenDisplay").textContent = fen;
+}
+
+// Set FEN string and update board
+function setFEN() {
+  var fenInput = document.getElementById("fenInput").value.trim();
+  if (game.load(fenInput)) {
+    board.position(game.fen());
+    moveHistory = game.history({ verbose: true });
+    displayPGN();
+    displayFEN();
+    updateButtons();
+  } else {
+    alert("Invalid FEN string");
+  }
+}
+
+$(document).ready(function () {
+  var urlParams = new URLSearchParams(window.location.search);
+  var level = urlParams.get("level");
+  if (level) {
+    skillLevel = level;
+    setSkillLevel(skillLevel);
+  }
+  initializeStockfish();
+});
+
+
+this is the server file
+
+const express = require("express");
+const path = require("path");
+const groq = require("groq-sdk");
+require('dotenv').config();
+
+const app = express();
+const PORT = 6000;
+
+const groq = new Groq({
+  apiKey: process.env.GROQ_API_KEY,
+  dangerouslyAllowBrowser: true,
+});
+
+app.post("/groq-text", async (req, res) => {
+  const {
+    FEN_INPUT,
+    PGN_INPUT,
+    BEST_MOVE_INPUT,
+    SEQUENCE_OF_BEST_MOVES_INPUT,
+    ALTERNATIVE_MOVE_1,
+    ALTERNATIVE_MOVE_2,
+    PLAYER_INPUT,
+  } = req.body;
+app.use(expreconst apiKey = process.env.API_KEY;ess.json());const apiKey = process.env.API_KEY;lues for Groq text generation:');app.use(expreconst apiKey = process.env.API_KEY;ess.json());const apiKey = process.env.API_KEY;lues for Groq text generation:');:", BEST_MOVE_INPUT);
+  console.log("SEQUENCE_OF_BEST_MOVES_INPUT:", SEQUENCE_OF_BEST_MOVES_INPUT);
+  console.log("ALTERNATIVE_MOVE_1:", ALTERNATIVE_MOVE_1);
+  console.log("ALTERNATIVE_MOVE_2:", ALTERNATIVE_MOVE_2);
+  console.log("PLAYER_INPUT:", PLAYER_INPUT);
+
+  const system_content = `You are a chess-tutor and your aim is to provide a comprehensive chess analysis session. Based on the current FEN position: ${FEN_INPUT} and the current PGN : ${PGN_INPUT}, Stockfish recommends ${BEST_MOVE_INPUT} for ${PLAYER_INPUT} as the best move. And Stockfish also provides ${SEQUENCE_OF_BEST_MOVES_INPUT} but only use this for your understanding to explain the ${BEST_MOVE_INPUT}. Here's how to understand and optimize this move:
+  - Development and Control: Evaluate how ${BEST_MOVE_INPUT} contributes to the development of ${PLAYER_INPUT}'s pieces and control over key squares, ensuring it aligns with the opening and middle game principles.
+  - Coordination: Assess the improvement in the coordination between your pieces due to ${BEST_MOVE_INPUT}, which is crucial for setting up effective strategies and defenses.
+  - Tactical Insights: 
+    * Forks: Check if ${BEST_MOVE_INPUT} can lead to potential forks.
+    * Pins: Look for opportunities where the move could exploit or create pins.
+    * Skewers: Determine if ${BEST_MOVE_INPUT} could result in skewers.
+    * Discovered Attacks: Explore the possibility of initiating a discovered attack with ${BEST_MOVE_INPUT}.
+    * Double Attacks: Consider if ${BEST_MOVE_INPUT} allows for double attacks, particularly those that check the king and threaten another piece.
+  - Defensive Strategy: Ensure that ${BEST_MOVE_INPUT} helps in maintaining a solid defensive posture, addressing any vulnerabilities and preparing for the opponent’s possible counters.
+  - Alternatives and Drawbacks: Examine alternative moves and their potential drawbacks. Compare the strategic and tactical merits of ${BEST_MOVE_INPUT} against other viable moves like ${ALTERNATIVE_MOVE_1} and ${ALTERNATIVE_MOVE_2}, highlighting why ${BEST_MOVE_INPUT} might be superior only if it is much better.
+  By integrating these analyses, you gain a deeper understanding of the move's strategic and tactical implications, helping you make informed decisions and improve your overall chess skills.`;
+
+  const user_content = `FEN_INPUT = ${FEN_INPUT},
+  PGN_INPUT = ${PGN_INPUT},
+  BEST_MOVE_INPUT = ${BEST_MOVE_INPUT},
+  SEQUENCE_OF_BEST_MOVES_INPUT = ${SEQUENCE_OF_BEST_MOVES_INPUT}
+  ALTERNATIVE_MOVE_1 = ${ALTERNATIVE_MOVE_1}
+  ALTERNATIVE_MOVE_2 = ${ALTERNATIVE_MOVE_2}
+  PLAYER_INPUT = ${PLAYER_INPUT}
+  Explain why it is the best move, with a concise yet comprehensive explanation in points`;
+
+  try {
+    const chatCompletion = await groq.chat.completions.create({
+      messages: [
+        {
+          role: "system",
+          content: system_content,
+        },
+        {
+          role: "user",
+          content: user_content,
+        },
+      ],
+      model: "llama3-70b-8192",
+      temperature: 0,
+      // Serve static files from the "public" directory
+      app.use(express.static(path.join(__dirname, "public")));
+      max_tokens: 1024,
+      top_p: 1,
+      stop: null,
+      stream: false,
+    });
+    res.json({ content: chatCompletion.choices[0]?.message?.content || "" });
+  } catch (error) {
+    console.error(
+      "Error fetching Groq text:",
+      error.response ? error.response.data : error.message
+    );
+    res.status(500).json({ error: "Error fetching Groq text" });
+  }
+});
+// Serve static files from the "public" directory
+app.use(express.static(path.join(__dirname, "public")));
+
+app.get("/", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "index.html"));
+});
+
+app.get("/game", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "game.html"));
+});
+
+app.get("/game", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "endgame.html"));
+});
+
+app.get("/game", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "styles.css"));
+});
+
+app.get("/img/:piece", (req, res) => {
+  res.sendFile(path.join(__dirname, "public", "img", req.params.piece));
+});
+app.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});
+.listen(PORT, () => {
+  console.log(`Server is running on http://localhost:${PORT}`);
+});
